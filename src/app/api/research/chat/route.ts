@@ -1,14 +1,13 @@
-import { CodeComposerAgent } from "@/lib/code-composer-agent";
 import { CodeComposerContext, generateCodeComposerPrompt, parseChainOfThoughtResponse } from "@/lib/code-composer-prompts";
-import { MAX_TOKENS, TITLE_MAPPINGS } from "@/lib/constants";
-import { documentIndexManager } from "@/lib/document-index-manager";
+import { configureLlamaSettings } from "@/lib/config/llama-settings";
+import { TITLE_MAPPINGS } from "@/lib/constants";
+import { queryEngine } from "@/lib/query-engine";
 import { DeepSeekLLM } from "@llamaindex/deepseek";
-import { HuggingFaceEmbedding } from "@llamaindex/huggingface";
-import { MetadataMode, Settings } from "llamaindex";
+import { Settings } from "llamaindex";
 import { NextRequest, NextResponse } from "next/server";
 import { config } from "../../../../config/environment";
 
-// simple system prompt for document q&a
+// Simple system prompt for document Q&A
 const RESEARCH_SYSTEM_PROMPT = `
 You are Nexus, an AI research assistant specialized in Apache ResilientDB and its related blockchain technology, distributed systems, and fault-tolerant consensus protocols. Your primary role is to help students, researchers, and practitioners understand complex technical concepts related to Apache ResilientDB and blockchain systems, who can answer questions about documents. 
 You have access to the content of a document and can provide accurate, detailed answers based on that content.
@@ -27,11 +26,20 @@ interface RequestData {
   scope?: string[];
 }
 
+interface CitationInfo {
+  id: number;
+  page: number;
+  path: string;
+  name: string;
+  displayTitle: string;
+}
+
 interface SourceInfo {
   sources: Array<{
     path: string;
     name: string;
     displayTitle: string;
+    pages: number[];
   }>;
   isMultiDocument: boolean;
   totalDocuments: number;
@@ -39,6 +47,7 @@ interface SourceInfo {
   tool: string;
   language: string;
   scope: string[];
+  citations: CitationInfo[];
 }
 
 const validateRequest = (data: RequestData): string | null => {
@@ -63,73 +72,47 @@ const validateRequest = (data: RequestData): string | null => {
   return null;
 };
 
-const configureSettings = (): void => {
-  Settings.llm = new DeepSeekLLM({
-    apiKey: config.deepSeekApiKey,
-    model: config.deepSeekModel,
-  });
+// Configuration is now handled centrally via configureLlamaSettings()
 
-  try {
-    Settings.embedModel = new HuggingFaceEmbedding() as any;
-  } catch (error) {
-    console.warn("Failed to initialize HuggingFace embedding:", error);
-    Settings.embedModel = new HuggingFaceEmbedding() as any;
-  }
-};
-
-const getDocumentIndex = async (targetPaths: string[]) => {
-  const hasAllIndices = documentIndexManager.hasAllIndices(targetPaths);
-  if (!hasAllIndices) {
-    throw new Error("Some document indices not found. Please prepare all selected documents again");
-  }
-
-  const documentIndex = await documentIndexManager.getCombinedIndex(targetPaths);
-  if (!documentIndex) {
-    throw new Error("Failed to create combined index. Please try selecting documents again");
-  }
-
-  console.log(`Using combined index for ${targetPaths.length} documents: ${targetPaths.join(", ")}`);
-  return documentIndex;
-};
-
-const retrieveAndRankContext = async (documentIndex: any, query: string, tool?: string, requestData?: RequestData) => {
-  const topK = tool === "code-composer" ? 8 : 8;
-  const retriever = documentIndex.asRetriever({ similarityTopK: topK });
-  const initialNodes = await retriever.retrieve({ query });
-
-  let retrievedNodes;
-  if (tool === "code-composer") {
-    try {
-      const deepSeekLLM = Settings.llm as DeepSeekLLM;
-      const codeComposerAgent = new CodeComposerAgent(deepSeekLLM, {
-        maxTokens: MAX_TOKENS
-      });
-
-      retrievedNodes = await codeComposerAgent.rerank(initialNodes, query, {
-        language: requestData?.language || 'ts',
-        scope: requestData?.scope || [], //tbd
-      });
-
-      console.log("code composer agent stats:", codeComposerAgent.getStats());
-    } catch (error) {
-      console.error("CodeComposerAgent failed, falling back to regular node retrieval:", error);
+// Get context and sources from queryEngine
+const getContextFromQueryEngine = async (
+  query: string, 
+  targetPaths: string[], 
+  tool?: string,
+  language?: string,
+  scope?: string[]
+) => {
+  // Use queryEngine for context retrieval with tool-specific options
+  const queryResult = await queryEngine.query(
+    query,
+    targetPaths,
+    {
+      enableStreaming: true,
+      topK: tool === "code-composer" ? 8 : 5,
+      tool,
+      language,
+      scope
     }
-  } else {
-    retrievedNodes = initialNodes;
-  }
+  );
 
-  return retrievedNodes;
+  return {
+    context: queryResult.context,
+    sources: queryResult.sources,
+    chunks: queryResult.chunks || [],
+    totalChunks: queryResult.totalChunks || 0
+  };
 };
 
-const formatContext = (retrievedNodes: any[]): string => {
+// Format context from retrieved chunks similar to route-old.ts
+const formatContext = (retrievedChunks: any[]): string => {
   const contextBySource: { [key: string]: string[] } = {};
 
-  retrievedNodes.forEach((node: any) => {
-    const sourceDoc = node.node.metadata?.source_document || "Unknown";
+  retrievedChunks.forEach((chunk: any) => {
+    const sourceDoc = chunk.source || "Unknown";
     if (!contextBySource[sourceDoc]) {
       contextBySource[sourceDoc] = [];
     }
-    contextBySource[sourceDoc].push(node.node.getContent(MetadataMode.ALL));
+    contextBySource[sourceDoc].push(chunk.content);
   });
 
   const contextParts = Object.entries(contextBySource).map(
@@ -142,28 +125,39 @@ const formatContext = (retrievedNodes: any[]): string => {
   return contextParts.join("\n\n---\n\n");
 };
 
+// Generate prompt for different tools
 const generatePrompt = (
   tool: string | undefined,
   context: string,
   query: string,
-  targetPaths: string[],
+  documentPaths: string[],
   language?: string,
-  scope?: string[]
+  scope?: string[],
+  sourceInfo?: SourceInfo
 ): string => {
+  let citationSection = "";
   if (tool === "code-composer") {
     const codeComposerContext: CodeComposerContext = {
       language: language || "ts",
       scope: scope || [],
       chunks: context,
       query,
-      documentTitles: targetPaths.map((p: string) => p.split("/").pop()?.replace(".pdf", "") || p)
+      documentTitles: documentPaths.map((p: string) => p.split("/").pop()?.replace(".pdf", "") || p)
     };
     return generateCodeComposerPrompt(codeComposerContext);
+  }else{
+  let citationSection = "";
+  if (sourceInfo && sourceInfo.citations.length) {
+    const citationLines = sourceInfo.citations.map((c) => `[^${c.id}]" (Page ${c.page} of ${c.displayTitle})`).join("\n");
+    citationSection = `\nWhen you use information from the documents, append a citation like [^id] right after the statement.\n\nCitations:\n${citationLines}\n
+    \n Multiple of the same citation in a response is fine, but if multiple statements/paragraphs reference the same citation in a row, only append the citation once before digging into those paragraphs so that the citation is only shown once.
+    `;
+  }
   }
 
-  return `${RESEARCH_SYSTEM_PROMPT}
+  return `${RESEARCH_SYSTEM_PROMPT}${citationSection}
 
-Documents: ${targetPaths.map((p: string) => p.split("/").pop()).join(", ")}
+Documents: ${documentPaths.map((p: string) => p.split("/").pop()).join(", ")}
 
 Retrieved Context:
 ${context}
@@ -171,29 +165,58 @@ ${context}
 Question: ${query}`;
 };
 
+// Create source info for the UI
 const createSourceInfo = (
   data: RequestData,
-  retrievedNodes: any[],
-  targetPaths: string[]
+  retrievedData: any[],
+  documentPaths: string[]
 ): SourceInfo => {
-  const { documentPath, documentPaths, tool, language, scope } = data;
-  const sourcePaths = documentPaths || (documentPath ? [documentPath] : []);
+  const { tool, language, scope } = data;
+
+  // Build pages map and citations list
+  const pagesByDoc: Record<string, number[]> = {};
+
+  const citations: CitationInfo[] = [];
+  let citationId = 1;
+
+  retrievedData.forEach((chunk: any) => {
+    const docPath = chunk.source;
+    const pageNumber = chunk.metadata?.page;
+    if (pageNumber === undefined) return;
+
+    const citationKey = `${docPath}|${pageNumber}`;
+    if (!citations.some(c => `${c.path}|${c.page}` === citationKey)) {
+      citations.push({ id: citationId++, page: pageNumber, path: docPath, name: docPath.split("/").pop() || docPath, displayTitle: TITLE_MAPPINGS[docPath.split("/").pop() || docPath] || docPath });
+    }
+
+    if (!pagesByDoc[docPath]) {
+      pagesByDoc[docPath] = [];
+    }
+
+    // Avoid duplicate page entries
+    if (!pagesByDoc[docPath].includes(pageNumber)) {
+      pagesByDoc[docPath].push(pageNumber);
+    }
+  });
 
   return {
-    sources: sourcePaths.map((path: string) => ({
+    sources: documentPaths.map((path: string) => ({
       path,
       name: path.split("/").pop() || path,
       displayTitle: TITLE_MAPPINGS[path.split("/").pop() || path] || path,
+      pages: pagesByDoc[path] || [],
     })),
-    isMultiDocument: !!documentPaths,
-    totalDocuments: documentPaths ? documentPaths.length : 1,
-    contextNodes: retrievedNodes.length,
+    isMultiDocument: documentPaths.length > 1,
+    totalDocuments: documentPaths.length,
+    contextNodes: retrievedData.length,
     tool: tool || "default",
     language: language || "ts",
-    scope: scope || []
+    scope: scope || [],
+    citations,
   };
 };
 
+// Handle streaming response using LlamaIndex native streaming
 const handleStreamingResponse = async (
   chatStream: any,
   sourceInfo: SourceInfo,
@@ -202,9 +225,9 @@ const handleStreamingResponse = async (
   return new ReadableStream({
     async start(controller) {
       try {
-        controller.enqueue(`__SOURCE_INFO__${JSON.stringify(sourceInfo)}\n\n`);
 
         if (tool === "code-composer") {
+          controller.enqueue(`__SOURCE_INFO__${JSON.stringify(sourceInfo)}\n\n`);
           let fullResponse = "";
           for await (const chunk of chatStream) {
             const content = chunk.delta;
@@ -230,8 +253,8 @@ const handleStreamingResponse = async (
               controller.enqueue(content);
             }
           }
+          controller.enqueue(`__SOURCE_INFO__${JSON.stringify(sourceInfo)}\n\n`);
         }
-
         controller.close();
       } catch (error) {
         controller.error(error);
@@ -240,6 +263,7 @@ const handleStreamingResponse = async (
   });
 };
 
+// Get error message for API errors
 const getErrorMessage = (error: any): string => {
   if (!(error instanceof Error)) {
     return "Failed to process your question";
@@ -265,45 +289,46 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: validationError }, { status: 400 });
     }
 
-    configureSettings();
+    // Ensure settings are configured
+    configureLlamaSettings();
 
     try {
-      const targetPaths = requestData.documentPaths!;
+      const documentPaths = requestData.documentPaths!;
 
-      const documentIndex = await getDocumentIndex(targetPaths);
-
-      const retrievedNodes = await retrieveAndRankContext(
-        documentIndex,
+      // Use queryEngine with tool-specific options - now handles code-composer internally
+      const { context, chunks } = await getContextFromQueryEngine(
         requestData.query,
+        documentPaths,
         requestData.tool,
-        requestData
-      );
-
-      // format context
-      const context = formatContext(retrievedNodes);
-
-      console.log(`Retrieved ${retrievedNodes.length} nodes from ${targetPaths.length} documents`);
-
-      const enhancedPrompt = generatePrompt(
-        requestData.tool,
-        context,
-        requestData.query,
-        targetPaths,
         requestData.language,
         requestData.scope
       );
 
-      // create chat stream
+      console.log(`Retrieved ${chunks.length} chunks from ${documentPaths.length} documents${requestData.tool ? ` (${requestData.tool})` : ''}`);
+
+      const sourceInfo = createSourceInfo(requestData, chunks, documentPaths);
+
+
+      // Generate enhanced prompt (includes citation instructions)
+      const enhancedPrompt = generatePrompt(
+        requestData.tool,
+        context,
+        requestData.query,
+        documentPaths,
+        requestData.language,
+        requestData.scope,
+        sourceInfo
+      );
+
+      // Create chat stream using native LlamaIndex streaming
       const deepSeekLLM = Settings.llm as DeepSeekLLM;
       const chatStream = await deepSeekLLM.chat({
         messages: [{ role: "user", content: enhancedPrompt }],
         stream: true,
       });
 
-      // create source info
-      const sourceInfo = createSourceInfo(requestData, retrievedNodes, targetPaths);
 
-      // handle streaming response
+      // Handle streaming response using native LlamaIndex streaming
       const readableStream = await handleStreamingResponse(
         chatStream,
         sourceInfo,
