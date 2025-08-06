@@ -30,10 +30,12 @@ class DocumentIndexManager {
     });
 
     try {
+      // Use default HuggingFace embedding model
       Settings.embedModel = new HuggingFaceEmbedding() as any;
+      console.log("HuggingFace embedding model initialized successfully");
     } catch (error) {
-      console.warn("Failed to initialize HuggingFace embedding:", error);
-      Settings.embedModel = new HuggingFaceEmbedding() as any;
+      console.error("Failed to initialize HuggingFace embedding:", error);
+      throw new Error("Could not initialize embedding model. Please check your HuggingFace configuration.");
     }
   }
 
@@ -126,6 +128,18 @@ class DocumentIndexManager {
         originalModifiedTime: sourceStats.mtime.toISOString(),
         cachedAt: new Date().toISOString(),
         documentsCount: documents.length,
+        // Check if any documents have layout information
+        hasLayoutData: documents.some(doc => {
+          const meta = doc.metadata || {};
+          return Object.keys(meta).some(key => 
+            key.toLowerCase().includes('bbox') || 
+            key.toLowerCase().includes('layout') || 
+            key.toLowerCase().includes('coordinate') ||
+            key.toLowerCase().includes('page') ||
+            key.toLowerCase().includes('element')
+          );
+        }),
+        layoutExtractionAttempted: true,
       };
 
       // save both files
@@ -145,19 +159,104 @@ class DocumentIndexManager {
   private async parseAndSaveDocuments(
     documentPath: string,
   ): Promise<Document[]> {
-    // parse the document using LlamaParse
-    const parser = new LlamaParseReader({
-      apiKey: config.llamaCloudApiKey,
-      resultType: "text", // simple text extraction
-    });
-
+    console.log(`Parsing document with layout extraction: ${documentPath}`);
     const filePath = join(process.cwd(), documentPath);
-    const documents = await parser.loadData(filePath);
 
-    // save parsed documents for future use
-    await this.saveParsedDocuments(documentPath, documents);
+    try {
+      // Method 1: Use loadJson() method to get structured data with layout information
+      const parser = new LlamaParseReader({
+        apiKey: config.llamaCloudApiKey,
+        // loadJson automatically sets resultType to "json" and enables layout extraction
+        // Optional: Add these parameters for better confidence score detection
+        //ignore_document_elements_for_layout_detection: true,  // Force detector even for PDFs with text layer
+        invalidateCache: true,  // Bust old cached jobs to get latest schema
+        verbose: true,
+      });
 
-    return documents;
+      console.log('Attempting to load JSON with layout data...');
+      const jsonResults = await parser.loadJson(filePath);
+      console.log(`Successfully got JSON results: ${jsonResults.length} objects`);
+      
+      // Process JSON results to extract documents with layout information
+      const documents: Document[] = [];
+      
+      for (const result of jsonResults) {
+        if (result.pages && Array.isArray(result.pages)) {
+          console.log(`Processing ${result.pages.length} pages from JSON result`);
+          
+          for (const page of result.pages) {
+            // Extract text content
+            const text = page.text || page.md || '';
+            if (text.trim()) {
+              // Process layout items - use page.layout (current) instead of page.items (legacy)
+              const processedLayoutItems = (page.layout || page.items || []).map((item: any) => ({
+                ...item,
+                // Preserve confidence from LlamaParse (null for digital PDFs, float for OCR/scanned)
+                confidence: item.confidence,
+                // Ensure we have element type from the 'label' or 'type' field  
+                element_type: item.label || item.type || 'unknown',
+              }));
+
+              // Create document with layout metadata
+              const doc = new Document({
+                text: text,
+                metadata: {
+                  page_number: page.page || 0,
+                  source_document: documentPath,
+                  job_id: result.job_id,
+                  file_path: result.file_path,
+                  // Store layout items (using page.layout for current schema)
+                  layout_items: processedLayoutItems,
+                  // Store images if available
+                  images: page.images || [],
+                  // Store any bounding box information (check both layout and items for compatibility)
+                  has_layout_data: !!(page.layout && page.layout.length > 0) || !!(page.items && page.items.length > 0),
+                }
+              });
+              documents.push(doc);
+            }
+          }
+        }
+      }
+
+      console.log(`Successfully processed ${documents.length} document chunks with potential layout data`);
+      
+      // Debug: Check if we have layout information
+      const documentsWithLayout = documents.filter(doc => 
+        doc.metadata?.layout_items && Array.isArray(doc.metadata.layout_items) && doc.metadata.layout_items.length > 0
+      );
+      
+      if (documentsWithLayout.length > 0) {
+        console.log(`Found ${documentsWithLayout.length} documents with layout items!`);
+        
+        // Show sample layout data (confidence will be null for digital PDFs, float for OCR)
+        const sampleDoc = documentsWithLayout[0];
+        const sampleItems = (sampleDoc.metadata?.layout_items as any[]).slice(0, 3);
+        console.log('Sample layout items:', JSON.stringify(sampleItems, null, 2));
+      } else {
+        console.log('No documents found with layout items in metadata');
+      }
+
+      // save parsed documents for future use
+      await this.saveParsedDocuments(documentPath, documents);
+      return documents;
+
+    } catch (jsonError) {
+      console.warn('JSON layout extraction failed, falling back to text extraction:', jsonError);
+      
+      // Method 2: Fallback to standard text extraction
+      const textParser = new LlamaParseReader({
+        apiKey: config.llamaCloudApiKey,
+        // Remove extract_layout for now to ensure basic functionality works
+      });
+
+      const documents = await textParser.loadData(filePath);
+      console.log(`Successfully parsed ${documents.length} document chunks using fallback text extraction`);
+      
+      // save parsed documents for future use
+      await this.saveParsedDocuments(documentPath, documents);
+      return documents;
+    }
   }
 
   // public method to prepare an index for a document

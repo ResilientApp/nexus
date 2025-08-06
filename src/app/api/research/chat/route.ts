@@ -4,6 +4,7 @@ import { MetadataMode, Settings } from "llamaindex";
 import { NextRequest, NextResponse } from "next/server";
 import { config } from "../../../../config/environment";
 import { documentIndexManager } from "../../../../lib/document-index-manager";
+import { pdfCoordinateMapper } from "../../../../lib/pdf-coordinate-mapper";
 
 // simple system prompt for document q&a
 const RESEARCH_SYSTEM_PROMPT = `
@@ -61,9 +62,13 @@ export async function POST(req: NextRequest) {
 
     try {
       Settings.embedModel = new HuggingFaceEmbedding() as any;
+      console.log("HuggingFace embedding model initialized for research chat");
     } catch (error) {
-      console.warn("Failed to initialize HuggingFace embedding:", error);
-      Settings.embedModel = new HuggingFaceEmbedding() as any;
+      console.error("Failed to initialize HuggingFace embedding in research chat:", error);
+      return NextResponse.json(
+        { error: "Could not initialize embedding model" },
+        { status: 500 }
+      );
     }
 
     try {
@@ -106,6 +111,18 @@ export async function POST(req: NextRequest) {
       // create retriever and get context from combined index
       const retriever = documentIndex.asRetriever({ similarityTopK: 15 }); // More context for multiple docs
       retrievedNodes = await retriever.retrieve({ query });
+
+      // Extract coordinate mappings from retrieved nodes
+      const coordinateMappings = pdfCoordinateMapper.extractCoordinateMappings(retrievedNodes);
+      console.log(`Extracted ${coordinateMappings.length} coordinate mappings from ${retrievedNodes.length} retrieved nodes`);
+
+      // Group mappings by document and page for debugging
+      const groupedMappings = pdfCoordinateMapper.groupMappingsByDocumentAndPage(coordinateMappings);
+      console.log('Grouped coordinate mappings by document and page:', Object.keys(groupedMappings));
+
+      // Create highlight data for potential future use
+      const highlightData = pdfCoordinateMapper.createHighlightData(coordinateMappings);
+      console.log('Created highlight data for documents:', Object.keys(highlightData));
 
       // Group context by source document for better organization
       const contextBySource: { [key: string]: string[] } = {};
@@ -159,6 +176,16 @@ Question: ${query}`;
         isMultiDocument: !!documentPaths,
         totalDocuments: documentPaths ? documentPaths.length : 1,
         contextNodes: retrievedNodes.length,
+        coordinateMappings: coordinateMappings,
+        highlightData: highlightData,
+        mappingsSummary: {
+          totalMappings: coordinateMappings.length,
+          documentsWithMappings: Object.keys(groupedMappings).length,
+          pagesWithMappings: Object.values(groupedMappings).reduce(
+            (total, docMappings) => total + Object.keys(docMappings).length, 
+            0
+          ),
+        },
       };
 
       const readableStream = new ReadableStream({

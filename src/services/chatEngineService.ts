@@ -78,9 +78,10 @@ class ChatEngineService {
 
       try {
         Settings.embedModel = new HuggingFaceEmbedding() as any;
+        console.log("HuggingFace embedding model initialized for chat service");
       } catch (error) {
-        console.warn("Failed to initialize HuggingFace embedding:", error);
-        Settings.embedModel = new HuggingFaceEmbedding() as any;
+        console.error("Failed to initialize HuggingFace embedding in chat service:", error);
+        throw new Error("Could not initialize embedding model for chat service");
       }
 
       if (config.llamaCloudApiKey && config.llamaCloudProjectName) {
