@@ -1,6 +1,85 @@
 @import "tailwindcss";
 @import "tw-animate-css";
 
+/* PDF Viewer styles */
+.pdf-highlight {
+  position: absolute;
+  background-color: rgba(255, 255, 0, 0.3);
+  pointer-events: none;
+  z-index: 20;
+}
+
+.dark-blue-toggle {
+  background-color: #1e40af;
+}
+
+/* Make sure iframe content takes full width */
+.pdf-container {
+  width: 100%;
+  height: 100%;
+  overflow: auto;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+}
+
+/* PDF content display improvements */
+.pdf-page {
+  margin: 0 auto;
+  box-shadow: 0 0 10px rgba(0, 0, 0, 0.15);
+  background-color: white;
+}
+
+.pdf-document {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+/* React PDF styles */
+.react-pdf__Page {
+  margin: 1rem 0;
+  box-shadow: 0 0 10px rgba(0, 0, 0, 0.15);
+  border-radius: 4px;
+}
+
+.react-pdf__Page__textContent {
+  cursor: text;
+  user-select: text;
+}
+
+.react-pdf__Page__annotations.annotationLayer {
+  display: none;
+}
+
+/* Override text selection */
+.react-pdf__Page--selected {
+  user-select: text !important;
+}
+
+.react-pdf__Document {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.react-pdf__Page {
+  position: relative;
+  margin-bottom: 20px;
+  box-shadow: 0 2px 5px rgba(0, 0, 0, 0.15);
+  overflow: hidden;
+}
+
+.react-pdf__Page__textContent {
+  cursor: text;
+  opacity: 0.8;
+}
+
+.react-pdf__message {
+  padding: 20px;
+  color: white;
+}
+
 @custom-variant dark (&:is(.dark *));
 
 :root {

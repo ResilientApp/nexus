@@ -1,9 +1,5 @@
 "use client";
 
-import { ChatInput, type Language } from "@/app/research/components/chat-input";
-import { PreviewPanel } from "@/app/research/components/preview-panel";
-import { CodeGeneration } from "@/app/research/types";
-import { ToolProvider } from "@/components/context/ToolContext";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -13,15 +9,12 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { SourceAttribution } from "@/components/ui/document-source-badge";
+import { Label } from "@/components/ui/label";
 import { Loader } from "@/components/ui/loader";
 import { MarkdownRenderer } from "@/components/ui/markdown-renderer";
 import { MultiDocumentSelector } from "@/components/ui/multi-document-selector";
-import {
-  ResizableHandle,
-  ResizablePanel,
-  ResizablePanelGroup,
-} from "@/components/ui/resizable";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { Separator } from "@/components/ui/separator";
 import {
   Sheet,
   SheetContent,
@@ -29,13 +22,30 @@ import {
   SheetTitle,
   SheetTrigger,
 } from "@/components/ui/sheet";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Textarea } from "@/components/ui/textarea";
 import { TooltipProvider } from "@/components/ui/tooltip";
-import { Document, useDocuments } from "@/hooks/useDocuments";
-import { parseChainOfThoughtResponse } from "@/lib/code-composer-prompts";
-import { TITLE_MAPPINGS } from "@/lib/constants";
-import { cleanUpImplementation } from "@/lib/utils";
-import { ChevronLeft, ChevronRight, Menu, MessageCircle, SquarePen } from "lucide-react";
+import PDFViewerReact from "@/components/ui/pdf-viewer";
+import SelectedContext from "@/components/ui/selected-context";
+import ClientOnly from "@/components/ui/client-only";
+import {
+  ChevronLeft,
+  ChevronRight,
+  FileText,
+  Menu,
+  MessageCircle,
+  Send,
+} from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
+
+interface Document {
+  id: string;
+  name: string;
+  path: string;
+  size: number;
+  uploadedAt: string;
+  displayTitle?: string;
+}
 
 interface Message {
   id: string;
@@ -48,110 +58,39 @@ interface Message {
     name: string;
     displayTitle?: string;
   }[];
-  citations?: Record<
-    number,
-    import("@/components/ui/citation-badge").CitationData
-  >;
 }
 
-// Helper functions for code composer streaming
-const getCurrentSection = (
-  fullResponse: string,
-): "reading-documents" | "topic" | "plan" | "pseudocode" | "implementation" => {
-  const topicIndex = fullResponse.indexOf("## TOPIC");
-  const planIndex = fullResponse.indexOf("## PLAN");
-  const pseudocodeIndex = fullResponse.indexOf("## PSEUDOCODE");
-  const implementationIndex = fullResponse.indexOf("## IMPLEMENTATION");
+// Filename to title mapping - you can extend this as needed
+const getDisplayTitle = (filename: string): string => {
+  const titleMappings: Record<string, string> = {
+    "resilientdb.pdf": "ResilientDB: Global Scale Resilient Blockchain Fabric",
+    "rcc.pdf":
+      "Resilient Concurrent Consensus for High-Throughput Secure Transaction Processing",
+  };
 
-  // If we haven't received any structured content yet, we're still reading documents
-  if (
-    topicIndex === -1 &&
-    planIndex === -1 &&
-    pseudocodeIndex === -1 &&
-    implementationIndex === -1
-  ) {
-    return "reading-documents";
-  }
-
-  if (
-    implementationIndex !== -1 &&
-    fullResponse.length > implementationIndex + 18
-  ) {
-    return "implementation";
-  }
-  if (pseudocodeIndex !== -1 && fullResponse.length > pseudocodeIndex + 15) {
-    return "pseudocode";
-  }
-  if (planIndex !== -1 && fullResponse.length > planIndex + 8) {
-    return "plan";
-  }
-  return "topic";
+  const lowerFilename = filename.toLowerCase();
+  return titleMappings[lowerFilename] || filename.replace(".pdf", "");
 };
 
-const extractSectionsFromStream = (fullResponse: string) => {
-  const topicStart = fullResponse.indexOf("## TOPIC");
-  const planStart = fullResponse.indexOf("## PLAN");
-  const pseudocodeStart = fullResponse.indexOf("## PSEUDOCODE");
-  const implementationStart = fullResponse.indexOf("## IMPLEMENTATION");
-
-  let topic = "";
-  let plan = "";
-  let pseudocode = "";
-  let implementation = "";
-
-  if (topicStart !== -1) {
-    const topicEnd = planStart !== -1 ? planStart : fullResponse.length;
-    topic = fullResponse.substring(topicStart + 9, topicEnd).trim();
-  }
-
-  if (planStart !== -1) {
-    const planEnd =
-      pseudocodeStart !== -1 ? pseudocodeStart : fullResponse.length;
-    plan = fullResponse.substring(planStart + 8, planEnd).trim();
-  }
-
-  if (pseudocodeStart !== -1) {
-    const pseudocodeEnd =
-      implementationStart !== -1 ? implementationStart : fullResponse.length;
-    pseudocode = fullResponse
-      .substring(pseudocodeStart + 15, pseudocodeEnd)
-      .trim();
-  }
-
-  if (implementationStart !== -1) {
-    implementation = fullResponse.substring(implementationStart + 18).trim();
-
-    implementation = cleanUpImplementation(implementation);
-  }
-
-  return { topic, plan, pseudocode, implementation };
-};
-
-function useSessionId() {
-  const sessionIdRef = useRef<string>(crypto.randomUUID());
-  const resetSession = useCallback(() => {
-    sessionIdRef.current = crypto.randomUUID();
-  }, []);
-  return { sessionId: sessionIdRef.current, resetSession };
-}
-
-function ResearchChatPageContent() {
-  const {
-    data: documents = [],
-    isLoading: isLoadingDocuments,
-    error,
-  } = useDocuments();
+export default function ResearchChatPage() {
+  const [documents, setDocuments] = useState<Document[]>([]);
   const [selectedDocuments, setSelectedDocuments] = useState<Document[]>([]);
   const [messages, setMessages] = useState<Message[]>([]);
   const [inputValue, setInputValue] = useState("");
   const [isLoading, setIsLoading] = useState(false);
+  const [isLoadingDocuments, setIsLoadingDocuments] = useState(true);
   const [isPreparingIndex, setIsPreparingIndex] = useState(false);
-  const [indexError, setIndexError] = useState(false);
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [isMobileSheetOpen, setIsMobileSheetOpen] = useState(false);
-  const [codeGenerations, setCodeGenerations] = useState<CodeGeneration[]>([]);
 
-  const { sessionId, resetSession } = useSessionId();
+  // Add PDF text selection state and refs
+  const [isTextSelectionEnabled, setIsTextSelectionEnabled] = useState(false);
+  const [selectedContextItems, setSelectedContextItems] = useState<Array<{
+    id: string;
+    text: string;
+    source?: string;
+    timestamp: number;
+  }>>([]);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
@@ -164,19 +103,51 @@ function ResearchChatPageContent() {
     scrollToBottom();
   }, [messages, scrollToBottom]);
 
-  // Handle document loading errors
+  // Load available documents
   useEffect(() => {
-    if (error) {
-      console.error("Failed to load documents:", error);
-    }
-  }, [error]);
+    const loadDocuments = async () => {
+      try {
+        const response = await fetch("/api/research/documents");
+        if (response.ok) {
+          const docs = await response.json();
+          // Add display titles to documents
+          const docsWithTitles = docs.map((doc: Document) => ({
+            ...doc,
+            displayTitle: getDisplayTitle(doc.name),
+          }));
+          setDocuments(docsWithTitles);
+        }
+      } catch (error) {
+        console.error("Failed to load documents:", error);
+      } finally {
+        setIsLoadingDocuments(false);
+      }
+    };
+
+    loadDocuments();
+  }, []);
 
   // Prepare index when document changes
   useEffect(() => {
     const prepareDocumentIndex = async () => {
       if (selectedDocuments.length > 0) {
         setIsPreparingIndex(true);
-        setIndexError(false);
+
+        const documentCount = selectedDocuments.length;
+        const documentMessage =
+          documentCount === 1
+            ? `📄 **${selectedDocuments[0].displayTitle || selectedDocuments[0].name}** has been selected. Preparing document for questions...`
+            : `📄 **${documentCount} documents** have been selected. Preparing documents for questions...`;
+
+        setMessages([
+          {
+            id: Date.now().toString(),
+            content: documentMessage,
+            role: "assistant",
+            timestamp: new Date().toISOString(),
+          },
+        ]);
+
         try {
           const response = await fetch("/api/research/prepare-index", {
             method: "POST",
@@ -185,12 +156,42 @@ function ResearchChatPageContent() {
               documentPaths: selectedDocuments.map((doc) => doc.path),
             }),
           });
-          if (!response.ok) {
-            setIndexError(true);
+
+          if (response.ok) {
+            const readyMessage =
+              documentCount === 1
+                ? `✅ **${selectedDocuments[0].displayTitle || selectedDocuments[0].name}** is ready! You can now ask questions about this document.`
+                : `✅ **${documentCount} documents** are ready! You can now ask questions about these documents.`;
+
+            setMessages([
+              {
+                id: Date.now().toString(),
+                content: readyMessage,
+                role: "assistant",
+                timestamp: new Date().toISOString(),
+              },
+            ]);
+          } else {
+            const error = await response.json();
+            setMessages([
+              {
+                id: Date.now().toString(),
+                content: `❌ Failed to prepare documents: ${error.error || "Unknown error"}`,
+                role: "assistant",
+                timestamp: new Date().toISOString(),
+              },
+            ]);
           }
         } catch (error) {
-          setIndexError(true);
           console.error("Error preparing document:", error);
+          setMessages([
+            {
+              id: Date.now().toString(),
+              content: `❌ Error preparing documents. Please try again.`,
+              role: "assistant",
+              timestamp: new Date().toISOString(),
+            },
+          ]);
         } finally {
           setIsPreparingIndex(false);
         }
@@ -200,379 +201,48 @@ function ResearchChatPageContent() {
     prepareDocumentIndex();
   }, [selectedDocuments]);
 
-  function parseSourceInfo(sourceInfoJson: any) {
-    // Check if it's already formatted (object with sources/citations) or raw array
-    if (Array.isArray(sourceInfoJson)) {
-      const sourceMap = new Map<
-        string,
-        { path: string; name: string; displayTitle: string }
-      >();
-      const citationMap: Record<
-        number,
-        import("@/components/ui/citation-badge").CitationData
-      > = {};
-      let citationId = 1;
+  const handleSendMessage = async () => {
+    if (
+      !inputValue.trim() ||
+      selectedDocuments.length === 0 ||
+      isLoading ||
+      isPreparingIndex
+    )
+      return;
 
-      sourceInfoJson.forEach((metadata: any) => {
-        if (!metadata?.source_document) {
-          console.warn("Missing source_document in metadata:", metadata);
-          return;
-        }
-
-        const sourceDocument = metadata.source_document.replace(
-          "documents/",
-          "",
-        );
-        const displayTitle = TITLE_MAPPINGS[sourceDocument] || sourceDocument;
-
-        if (!sourceMap.has(sourceDocument)) {
-          sourceMap.set(sourceDocument, {
-            path: sourceDocument,
-            name: sourceDocument,
-            displayTitle,
-          });
-        }
-
-        citationMap[citationId] = {
-          id: citationId,
-          displayTitle,
-          page: metadata.page_label || metadata.page || 0,
-        };
-        citationId++;
-      });
-
-      return {
-        sources: Array.from(sourceMap.values()),
-        citations: citationMap,
-      };
-    } else {
-      // Already formatted object
-      return sourceInfoJson;
-    }
-  }
-
-  const handleCodeComposerStream = async (
-    response: Response,
-    assistantPlaceholderMessage: Message,
-    payload: {
-      query: string;
-      documentPaths: string[];
-      tool?: string;
-      language?: Language;
-      scope?: string[];
-    },
-    earlyCodeGenerationId: string | null,
-  ) => {
-    const reader = response.body?.getReader();
-    if (!reader) {
-      // If no reader, update placeholder to show an error
-      setMessages((prev) =>
-        prev.map((msg) =>
-          msg.id === assistantPlaceholderMessage.id
-            ? {
-                ...msg,
-                content: "Sorry, there was an issue with the response stream.",
-                isLoadingPlaceholder: false,
-              }
-            : msg,
-        ),
-      );
-
-      // Remove the early code generation if it was created
-      if (earlyCodeGenerationId) {
-        setCodeGenerations((prev) =>
-          prev.filter((gen) => gen.id !== earlyCodeGenerationId),
-        );
-      }
-
-      throw new Error("No response reader available");
-    }
-
-    // Remove the isLoading flag from the placeholder once we start receiving data
-    setMessages((prevMessages) =>
-      prevMessages.map((msg) =>
-        msg.id === assistantPlaceholderMessage.id
-          ? { ...msg, isLoadingPlaceholder: false, content: "" }
-          : msg,
-      ),
-    );
-
-    const decoder = new TextDecoder();
-    let buffer = "";
-    let sourceInfo: any = null;
-    let fullResponse = "";
-    let currentCodeGeneration: string | null = null;
-
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-
-      const chunk = decoder.decode(value, { stream: true });
-      buffer += chunk;
-      fullResponse += chunk;
-
-      // Check if we have source information at the beginning
-      if (buffer.includes("__SOURCE_INFO__") && !sourceInfo) {
-        const sourceInfoMatch = buffer.match(/__SOURCE_INFO__([\s\S]*?)\n\n/);
-        if (sourceInfoMatch) {
-          try {
-            const rawSourceInfo = JSON.parse(sourceInfoMatch[1]);
-
-            sourceInfo = parseSourceInfo(rawSourceInfo);
-
-            buffer = buffer.replace(/__SOURCE_INFO__[\s\S]*?\n\n/, "");
-
-            if (sourceInfo.tool === "code-composer") {
-              if (earlyCodeGenerationId) {
-                currentCodeGeneration = earlyCodeGenerationId;
-
-                setCodeGenerations((prev) =>
-                  prev.map((gen) =>
-                    gen.id === earlyCodeGenerationId
-                      ? {
-                          ...gen,
-                          language: sourceInfo.language || gen.language,
-                          sources: sourceInfo?.sources || [],
-                        }
-                      : gen,
-                  ),
-                );
-              } else {
-                const codeGenId = Date.now().toString();
-                currentCodeGeneration = codeGenId;
-
-                const newCodeGeneration: CodeGeneration = {
-                  id: codeGenId,
-                  language: sourceInfo.language || "ts",
-                  query: payload.query,
-                  topic: "",
-                  plan: "",
-                  pseudocode: "",
-                  implementation: "",
-                  hasStructuredResponse: false,
-                  timestamp: new Date().toISOString(),
-                  isStreaming: true,
-                  currentSection: "reading-documents",
-                  sources: sourceInfo?.sources || [],
-                };
-
-                setCodeGenerations((prev) => [...prev, newCodeGeneration]);
-              }
-
-              setMessages((prev) =>
-                prev.map((msg) =>
-                  msg.id === assistantPlaceholderMessage.id
-                    ? {
-                        ...msg,
-                        content:
-                          "Code generation started. Check the preview panel to see live progress.",
-                        isLoadingPlaceholder: false,
-                        sources: sourceInfo?.sources || [],
-                        citations: (() => {
-                          const cit: Record<
-                            number,
-                            import("@/components/ui/citation-badge").CitationData
-                          > = {};
-                          if (sourceInfo?.citations) {
-                            Object.values(sourceInfo.citations).forEach(
-                              (c: any) => {
-                                cit[c.id] = c;
-                              },
-                            );
-                          }
-                          return Object.keys(cit).length ? cit : undefined;
-                        })(),
-                      }
-                    : msg,
-                ),
-              );
-              continue;
-            }
-          } catch (error) {
-            console.error("Failed to parse source info:", error);
-          }
-        }
-      }
-
-      // Handle code composer live streaming
-      if (sourceInfo?.tool === "code-composer" && currentCodeGeneration) {
-        const currentSection = getCurrentSection(fullResponse);
-        const { topic, plan, pseudocode, implementation } =
-          extractSectionsFromStream(fullResponse);
-
-        setCodeGenerations((prev) =>
-          prev.map((gen) =>
-            gen.id === currentCodeGeneration
-              ? {
-                  ...gen,
-                  topic,
-                  plan,
-                  pseudocode,
-                  implementation,
-                  currentSection,
-                }
-              : gen,
-          ),
-        );
-        continue;
-      }
-
-      if (buffer.includes("__CODE_COMPOSER_META__")) {
-        const metaMatch = buffer.match(
-          /__CODE_COMPOSER_META__({[\s\S]*?})\n\n/,
-        );
-        if (metaMatch) {
-          try {
-            JSON.parse(metaMatch[1]);
-            buffer = buffer.replace(/__CODE_COMPOSER_META__[\s\S]*?\n\n/, "");
-          } catch (error) {
-            console.error("Failed to parse code composer metadata:", error);
-          }
-        }
-      }
-
-      // Update message content for non-code-composer tools (regular chat)
-      if (!sourceInfo || sourceInfo?.tool !== "code-composer") {
-        setMessages((prev) =>
-          prev.map((msg) =>
-            msg.id === assistantPlaceholderMessage.id
-              ? {
-                  ...msg,
-                  content: buffer,
-                  isLoadingPlaceholder: false,
-                  sources: sourceInfo?.sources || [],
-                  citations: (() => {
-                    const cit: Record<
-                      number,
-                      import("@/components/ui/citation-badge").CitationData
-                    > = {};
-                    if (sourceInfo?.citations) {
-                      Object.values(sourceInfo.citations).forEach((c: any) => {
-                        cit[c.id] = c;
-                      });
-                    }
-                    return Object.keys(cit).length ? cit : undefined;
-                  })(),
-                }
-              : msg,
-          ),
-        );
-      }
-    }
-
-    if (sourceInfo?.tool === "code-composer") {
-      try {
-        const parsed = parseChainOfThoughtResponse(fullResponse);
-
-        let cleanImplementation = parsed.implementation;
-        if (cleanImplementation) {
-          cleanImplementation = cleanImplementation
-            .replace(/__CODE_COMPOSER_META__[\s\S]*$/, "")
-            .trim();
-
-          const lastCodeBlockEnd = cleanImplementation.lastIndexOf("```");
-          if (lastCodeBlockEnd !== -1) {
-            const afterCodeBlock = cleanImplementation
-              .substring(lastCodeBlockEnd + 3)
-              .trim();
-            if (
-              afterCodeBlock.length > 50 &&
-              afterCodeBlock.includes("This implementation")
-            ) {
-              cleanImplementation = cleanImplementation
-                .substring(0, lastCodeBlockEnd + 3)
-                .trim();
-            }
-          }
-        }
-
-        setCodeGenerations((prev) =>
-          prev.map((gen) =>
-            gen.isStreaming
-              ? {
-                  ...gen,
-                  topic: parsed.topic,
-                  plan: parsed.plan,
-                  pseudocode: parsed.pseudocode,
-                  implementation: cleanImplementation,
-                  hasStructuredResponse: parsed.hasStructuredResponse,
-                  isStreaming: false,
-                  currentSection: undefined,
-                }
-              : gen,
-          ),
-        );
-      } catch (error) {
-        console.error("Failed to parse code generation:", error);
-      }
-    }
-  };
-
-  const handleSendMessage = async (payload: {
-    query: string;
-    documentPaths: string[];
-    tool?: string;
-    language?: Language;
-    scope?: string[];
-  }) => {
     const userMessage: Message = {
-      id: crypto.randomUUID(),
-      content: payload.query,
+      id: Date.now().toString(),
+      content: inputValue,
       role: "user",
       timestamp: new Date().toISOString(),
     };
 
     // Create a placeholder for the assistant's response
     const assistantPlaceholderMessage: Message = {
-      id: crypto.randomUUID(),
-      content:
-        payload.tool === "code-composer"
-          ? "Reading and analyzing documents to generate code. Check the preview panel to see live progress."
-          : "",
+      id: (Date.now() + 1).toString(), // Ensure unique ID
+      content: "",
       role: "assistant",
       timestamp: new Date().toISOString(),
-      isLoadingPlaceholder: payload.tool !== "code-composer",
+      isLoadingPlaceholder: true,
     };
 
     setMessages((prev) => [...prev, userMessage, assistantPlaceholderMessage]);
+    const currentQuery = inputValue; // Store inputValue before clearing
     setInputValue("");
     setIsLoading(true);
 
-    let earlyCodeGenerationId: string | null = null;
-    if (payload.tool === "code-composer") {
-      earlyCodeGenerationId = crypto.randomUUID();
-
-      const newCodeGeneration: CodeGeneration = {
-        id: earlyCodeGenerationId,
-        language: payload.language || "ts",
-        query: payload.query,
-        topic: "",
-        plan: "",
-        pseudocode: "",
-        implementation: "",
-        hasStructuredResponse: false,
-        timestamp: new Date().toISOString(),
-        isStreaming: true,
-        currentSection: "reading-documents",
-        sources: [],
-      };
-
-      setCodeGenerations((prev) => [...prev, newCodeGeneration]);
-    }
-
     try {
-      const streamingPayload = {
-        ...payload,
-        enableStreaming: true,
-        sessionId,
-      };
       const response = await fetch("/api/research/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(streamingPayload),
+        body: JSON.stringify({
+          query: currentQuery, // Use stored query
+          documentPaths: selectedDocuments.map((doc) => doc.path),
+        }),
       });
 
       if (!response.ok) {
+        // If the response is not OK, update the placeholder to show an error
         setMessages((prev) =>
           prev.map((msg) =>
             msg.id === assistantPlaceholderMessage.id
@@ -585,24 +255,80 @@ function ResearchChatPageContent() {
               : msg,
           ),
         );
-
-        if (earlyCodeGenerationId) {
-          setCodeGenerations((prev) =>
-            prev.filter((gen) => gen.id !== earlyCodeGenerationId),
-          );
-        }
-
         throw new Error(`Failed to send message. Status: ${response.status}`);
       }
 
-      await handleCodeComposerStream(
-        response,
-        assistantPlaceholderMessage,
-        payload,
-        earlyCodeGenerationId,
+      const reader = response.body?.getReader();
+      if (!reader) {
+        // If no reader, update placeholder to show an error
+        setMessages((prev) =>
+          prev.map((msg) =>
+            msg.id === assistantPlaceholderMessage.id
+              ? {
+                  ...msg,
+                  content:
+                    "Sorry, there was an issue with the response stream.",
+                  isLoadingPlaceholder: false,
+                }
+              : msg,
+          ),
+        );
+        throw new Error("No response reader available");
+      }
+
+      // Remove the isLoading flag from the placeholder once we start receiving data
+      // and prepare to fill its content.
+      // We find it by ID and update it.
+      setMessages((prevMessages) =>
+        prevMessages.map((msg) =>
+          msg.id === assistantPlaceholderMessage.id
+            ? { ...msg, isLoadingPlaceholder: false, content: "" } // Clear content, remove placeholder flag
+            : msg,
+        ),
       );
+
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let sourceInfo: any = null;
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+
+        // Check if we have source information at the beginning
+        if (buffer.includes("__SOURCE_INFO__") && !sourceInfo) {
+          const sourceInfoMatch = buffer.match(
+            /__SOURCE_INFO__({[\s\S]*?})\n\n/,
+          );
+          if (sourceInfoMatch) {
+            try {
+              sourceInfo = JSON.parse(sourceInfoMatch[1]);
+              buffer = buffer.replace(/__SOURCE_INFO__[\s\S]*?\n\n/, "");
+            } catch (error) {
+              console.error("Failed to parse source info:", error);
+            }
+          }
+        }
+
+        setMessages((prev) =>
+          prev.map((msg) =>
+            msg.id === assistantPlaceholderMessage.id
+              ? {
+                  ...msg,
+                  content: buffer,
+                  isLoadingPlaceholder: false,
+                  sources: sourceInfo?.sources || [],
+                }
+              : msg,
+          ),
+        );
+      }
     } catch (error) {
       console.error("Chat error:", error);
+      // If an error occurred and it wasn't handled by updating the placeholder already,
+      // ensure the placeholder is removed or updated to an error message.
       setMessages((prev) =>
         prev.map((msg) =>
           msg.id === assistantPlaceholderMessage.id && msg.isLoadingPlaceholder
@@ -614,19 +340,16 @@ function ResearchChatPageContent() {
             : msg,
         ),
       );
-
-      if (earlyCodeGenerationId) {
-        setCodeGenerations((prev) =>
-          prev.filter((gen) => gen.id !== earlyCodeGenerationId),
-        );
-      }
     } finally {
       setIsLoading(false);
     }
   };
 
-  const handleKeyDown = () => {
-    // This will be handled by ChatInput component
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      handleSendMessage();
+    }
   };
 
   const handleDocumentKeyDown = useCallback(
@@ -645,9 +368,9 @@ function ResearchChatPageContent() {
       if (index === -1) {
         return [...prev, doc];
       }
-      return prev;
+      return prev; // Don't add duplicates
     });
-    setIsMobileSheetOpen(false);
+    setIsMobileSheetOpen(false); // Close mobile sheet when document is selected
   }, []);
 
   const handleDocumentDeselect = useCallback((doc: Document) => {
@@ -662,9 +385,35 @@ function ResearchChatPageContent() {
     setSelectedDocuments([]);
   }, []);
 
-  const handleCloseCodeGeneration = (generationId: string) => {
-    setCodeGenerations((prev) => prev.filter((gen) => gen.id !== generationId));
-  };
+  // Handle adding selected text from PDF viewer
+  const handleAddSelectedText = useCallback((text: string, documentName?: string) => {
+    if (text && text.trim()) {
+      const newContextItem = {
+        id: `ctx-${Date.now()}`,
+        text: text.trim(),
+        source: documentName || "Unknown Document",
+        timestamp: Date.now()
+      };
+      
+      setSelectedContextItems(prev => [...prev, newContextItem]);
+      
+      // Switch to the context tab to show the user their selection was added
+      const contextTab = document.querySelector('[data-state="inactive"][value="context"]');
+      if (contextTab) {
+        (contextTab as HTMLElement).click();
+      }
+    }
+  }, []);
+  
+  // Handle removing a context item
+  const handleRemoveContextItem = useCallback((id: string) => {
+    setSelectedContextItems(prev => prev.filter(item => item.id !== id));
+  }, []);
+  
+  // Handle clearing all context items
+  const handleClearContextItems = useCallback(() => {
+    setSelectedContextItems([]);
+  }, []);
 
   return (
     <TooltipProvider>
@@ -742,21 +491,6 @@ function ResearchChatPageContent() {
 
             {!isSidebarCollapsed && (
               <CardContent className="p-3 flex-1 overflow-hidden">
-                <div className="flex items-center gap-2 mb-2 w-full">
-                  <Button
-                    size="sm"
-                    variant="secondary"
-                    disabled={selectedDocuments.length === 0 || messages.length === 0}
-                    className="flex-1 gap-2"
-                    onClick={() => {
-                      resetSession();
-                      setMessages([]);
-                    }}
-                  >
-                    <SquarePen />
-                    New Chat
-                  </Button>
-                </div>
                 <MultiDocumentSelector
                   documents={documents}
                   selectedDocuments={selectedDocuments}
@@ -769,7 +503,6 @@ function ResearchChatPageContent() {
                   showSearch={true}
                   showSelectAll={true}
                 />
-
               </CardContent>
             )}
 
@@ -795,191 +528,325 @@ function ResearchChatPageContent() {
         </Card>
 
         {/* Main Content Area */}
-        <div className="flex-1 overflow-hidden">
-          <ResizablePanelGroup direction="horizontal" className="h-full">
-            {/* Chat Interface */}
-            <ResizablePanel defaultSize={60} minSize={30}>
-              <Card
-                className="h-full flex flex-col rounded-none border-0 gap-0 min-h-0 bg-card/60 backdrop-blur-sm"
-                role="main"
-                aria-label="Chat interface"
-              >
-                {selectedDocuments.length === 0 ? (
-                  <CardContent className="flex-1 flex items-center justify-center p-4">
-                    <Card className="text-center max-w-md">
-                      <CardContent className="pt-6">
-                        <MessageCircle
-                          className="h-16 w-16 mx-auto mb-4 text-muted-foreground"
-                          aria-hidden="true"
-                        />
-                        <CardTitle className="text-xl mb-2">
-                          Select Documents
-                        </CardTitle>
-                        <CardDescription className="mb-4">
-                          Choose documents from the library to start chatting.
-                        </CardDescription>
-                        <Button
-                          variant="outline"
-                          onClick={() => setIsMobileSheetOpen(true)}
-                          className="md:hidden"
-                          aria-label="Browse documents to select for chatting"
-                        >
-                          <Menu className="h-4 w-4 mr-2" aria-hidden="true" />
-                          Browse Documents
-                        </Button>
-                      </CardContent>
-                    </Card>
+        <div className="flex-1 flex flex-col md:flex-row overflow-hidden">
+          {/* Chat Interface */}
+          <Card
+            className="flex-1 flex flex-col rounded-none border-0 gap-0 min-h-0 bg-card/60 backdrop-blur-sm"
+            role="main"
+            aria-label="Chat interface"
+          >
+            {selectedDocuments.length === 0 ? (
+              <CardContent className="flex-1 flex items-center justify-center p-4">
+                <Card className="text-center max-w-md">
+                  <CardContent className="pt-6">
+                    <MessageCircle
+                      className="h-16 w-16 mx-auto mb-4 text-muted-foreground"
+                      aria-hidden="true"
+                    />
+                    <CardTitle className="text-xl mb-2">
+                      Select Documents
+                    </CardTitle>
+                    <CardDescription className="mb-4">
+                      Choose documents from the library to start chatting.
+                    </CardDescription>
+                    <Button
+                      variant="outline"
+                      onClick={() => setIsMobileSheetOpen(true)}
+                      className="md:hidden"
+                      aria-label="Browse documents to select for chatting"
+                    >
+                      <Menu className="h-4 w-4 mr-2" aria-hidden="true" />
+                      Browse Documents
+                    </Button>
                   </CardContent>
-                ) : (
-                  <>
-                    {/* Chat Header */}
-                    <CardHeader className="border-b flex-shrink-0">
-                      <div className="flex items-center justify-between">
-                        <div className="flex-1 min-w-0">
-                          <CardTitle className="text-lg truncate">
-                            Chat with{" "}
-                            {selectedDocuments.length === 1
-                              ? selectedDocuments[0].displayTitle ||
-                                selectedDocuments[0].name
-                              : `${selectedDocuments.length} Documents`}
-                          </CardTitle>
-                          <CardDescription>
-                            {isPreparingIndex
-                              ? (selectedDocuments.length === 1
-                                  ? `Preparing ${selectedDocuments[0].displayTitle || selectedDocuments[0].name}...`
-                                  : `Preparing ${selectedDocuments.length} documents...`)
-                              : indexError
-                                ? (
-                                    <span className="text-red-600">
-                                      Could not load {selectedDocuments.length === 1 ? "document" : "documents"}
-                                    </span>
-                                  )
-                                : (
-                                    <>
-                                      <span className="text-green-600">✓</span>{" "}
-                                      {selectedDocuments.length === 1
-                                        ? "Ready to answer questions about this document."
-                                        : "Ready to answer questions about these documents."}
-                                    </>
-                                  )
-                            }
-                          </CardDescription>
-                        </div>
-                        <div className="flex items-center space-x-2">
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            onClick={() => setIsMobileSheetOpen(true)}
-                            className="md:hidden"
-                            aria-label="Change document"
+                </Card>
+              </CardContent>
+            ) : (
+              <>
+                {/* Chat Header */}
+                <CardHeader className="border-b flex-shrink-0">
+                  <div className="flex items-center justify-between">
+                    <div className="flex-1 min-w-0">
+                      <CardTitle className="text-lg truncate">
+                        Chat with{" "}
+                        {selectedDocuments.length === 1
+                          ? selectedDocuments[0].displayTitle ||
+                            selectedDocuments[0].name
+                          : `${selectedDocuments.length} Documents`}
+                      </CardTitle>
+                      <CardDescription>
+                        Ask questions about{" "}
+                        {selectedDocuments.length === 1
+                          ? "this document"
+                          : "these documents"}
+                      </CardDescription>
+                    </div>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setIsMobileSheetOpen(true)}
+                      className="md:hidden ml-2"
+                      aria-label="Change document"
+                    >
+                      <Menu className="h-4 w-4" aria-hidden="true" />
+                    </Button>
+                  </div>
+                </CardHeader>
+
+                {/* Messages */}
+                <div className="flex-1 min-h-0 overflow-hidden">
+                  <ScrollArea
+                    className="h-full p-4"
+                    role="log"
+                    aria-label="Chat messages"
+                    aria-live="polite"
+                  >
+                    <div className="space-y-3">
+                      {messages.map((message) => (
+                        <div
+                          key={message.id}
+                          className={`flex ${message.role === "user" ? "justify-end" : "justify-start"}`}
+                          role="article"
+                          aria-label={`${message.role === "user" ? "Your message" : "AI response"}`}
+                        >
+                          <Card
+                            variant="message"
+                            className={`max-w-[85%] md:max-w-[80%] transition-all duration-200 ease-out ${
+                              message.role === "user"
+                                ? "bg-primary text-primary-foreground border-primary"
+                                : "bg-card"
+                            }`}
                           >
-                            <Menu className="h-4 w-4" aria-hidden="true" />
-                          </Button>
+                            <CardContent variant="message">
+                              {message.role === "user" ? (
+                                <p className="text-sm leading-relaxed">
+                                  {message.content}
+                                </p>
+                              ) : message.isLoadingPlaceholder ? (
+                                <div
+                                  className="flex items-center justify-center py-2"
+                                  aria-label="AI is thinking"
+                                >
+                                  <Loader size="md" variant="loading-dots" />
+                                </div>
+                              ) : (
+                                <div className="text-sm">
+                                  <MarkdownRenderer content={message.content} />
+                                  {message.sources &&
+                                    message.sources.length > 0 && (
+                                      <SourceAttribution
+                                        sources={message.sources}
+                                        className="mt-2 pt-2 border-t border-border/20"
+                                        showLabel={true}
+                                        clickable={false}
+                                      />
+                                    )}
+                                </div>
+                              )}
+                            </CardContent>
+                          </Card>
+                        </div>
+                      ))}
+                      <div ref={messagesEndRef} />
+                    </div>
+                  </ScrollArea>
+                </div>
+
+                {/* Input */}
+                <CardContent
+                  className="border-t p-4 flex-shrink-0"
+                  role="form"
+                  aria-label="Send message"
+                >
+                  <div className="flex space-x-2">
+                    <div className="flex-1 space-y-2">
+                      <Label htmlFor="message-input" className="sr-only">
+                        Type your message about the document
+                      </Label>
+                      <Textarea
+                        id="message-input"
+                        value={inputValue}
+                        onChange={(e) => setInputValue(e.target.value)}
+                        onKeyDown={handleKeyDown}
+                        placeholder={
+                          isPreparingIndex
+                            ? "Preparing documents..."
+                            : selectedDocuments.length === 0
+                              ? "Select documents to start chatting..."
+                              : selectedDocuments.length === 1
+                                ? `Ask questions about ${selectedDocuments[0].displayTitle || selectedDocuments[0].name}...`
+                                : `Ask questions about ${selectedDocuments.length} documents...`
+                        }
+                        className="resize-none"
+                        rows={2}
+                        disabled={
+                          isLoading ||
+                          isPreparingIndex ||
+                          selectedDocuments.length === 0
+                        }
+                        aria-describedby="message-input-help"
+                      />
+                      <p id="message-input-help" className="sr-only">
+                        Press Enter to send your message, or Shift+Enter for a
+                        new line
+                      </p>
+                    </div>
+                    <Button
+                      onClick={handleSendMessage}
+                      disabled={
+                        !inputValue.trim() ||
+                        isLoading ||
+                        isPreparingIndex ||
+                        selectedDocuments.length === 0
+                      }
+                      className="px-4"
+                      size="lg"
+                      aria-label="Send message"
+                    >
+                      {isLoading || isPreparingIndex ? (
+                        <Loader size="sm" aria-label="Sending..." />
+                      ) : (
+                        <Send className="h-4 w-4" aria-hidden="true" />
+                      )}
+                    </Button>
+                  </div>
+                </CardContent>
+              </>
+            )}
+          </Card>
+
+          <Separator orientation="vertical" className="hidden md:block" />
+
+          {/* Content Area: PDF Preview and Selected Context */}
+          <div className="w-full md:w-2/5 hidden md:flex flex-col bg-card/40 backdrop-blur-sm rounded-none border-0 min-h-0">
+            {selectedDocuments.length > 0 ? (
+              <div className="h-full flex flex-col">
+                <CardHeader className="border-b flex-shrink-0 px-4 py-3">
+                  <div className="flex flex-col gap-2">
+                    <div className="flex justify-between items-center">
+                      <div>
+                        <CardTitle className="text-lg truncate">
+                          PDF Viewer
+                        </CardTitle>
+                        {/* <CardDescription className="text-xs mt-1">
+                          {selectedDocuments.length === 1
+                            ? `Viewing: ${selectedDocuments[0].displayTitle || selectedDocuments[0].name}`
+                            : `${selectedDocuments.length} documents selected`}
+                        </CardDescription> */}
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <div className="flex items-center">
+                          <span className="mr-2 text-xs font-medium">Context Selection</span>
+                          <label className="relative inline-flex items-center cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={isTextSelectionEnabled}
+                              onChange={() => setIsTextSelectionEnabled((v) => !v)}
+                              className="sr-only peer"
+                            />
+                            <div className="w-9 h-5 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-primary/20 rounded-full peer peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all dark-blue-toggle"></div>
+                          </label>
                         </div>
                       </div>
-                    </CardHeader>
-
-                    {/* Messages */}
-                    <div className="flex-1 min-h-0 overflow-hidden">
-                      <ScrollArea
-                        className="h-full p-4"
-                        role="log"
-                        aria-label="Chat messages"
-                        aria-live="polite"
-                      >
-                        <div className="space-y-3">
-                          {messages.map((message) => (
-                            <div
-                              key={message.id}
-                              className={`flex ${message.role === "user" ? "justify-end" : "justify-start"}`}
-                              role="article"
-                              aria-label={`${message.role === "user" ? "Your message" : "AI response"}`}
-                            >
-                              <Card
-                                variant="message"
-                                className={`max-w-[85%] md:max-w-[80%] transition-all duration-200 ease-out ${
-                                  message.role === "user"
-                                    ? "bg-primary text-primary-foreground border-primary"
-                                    : "bg-card"
-                                }`}
-                              >
-                                <CardContent variant="message">
-                                  {message.role === "user" ? (
-                                    <p className="text-sm leading-relaxed">
-                                      {message.content}
-                                    </p>
-                                  ) : message.isLoadingPlaceholder ? (
-                                    <div
-                                      className="flex items-center justify-center py-2"
-                                      aria-label="AI is thinking"
-                                    >
-                                      <Loader
-                                        size="md"
-                                        variant="loading-dots"
-                                      />
-                                    </div>
-                                  ) : (
-                                    <div className="text-sm">
-                                      <MarkdownRenderer
-                                        content={message.content}
-                                        citations={message.citations}
-                                      />
-                                      {message.sources &&
-                                        message.sources.length > 0 && (
-                                          <SourceAttribution
-                                            sources={message.sources}
-                                            className="mt-2 pt-2 border-t border-border/20"
-                                            showLabel={true}
-                                            clickable={false}
-                                          />
-                                        )}
-                                    </div>
-                                  )}
-                                </CardContent>
-                              </Card>
-                            </div>
-                          ))}
-                          <div ref={messagesEndRef} />
-                        </div>
-                      </ScrollArea>
                     </div>
-
-                    {/* Input */}
-                    <ChatInput
-                      inputValue={inputValue}
-                      setInputValue={setInputValue}
-                      onSendMessage={handleSendMessage}
-                      isLoading={isLoading}
-                      isPreparingIndex={isPreparingIndex}
-                      selectedDocuments={selectedDocuments}
-                      onKeyDown={handleKeyDown}
+                  </div>
+                </CardHeader>
+                <div className="flex-1 flex flex-col min-h-0">
+                  <Tabs
+                    defaultValue="document"
+                    className="h-full flex flex-col"
+                  >
+                    <div className="px-4 pt-2">
+                      <TabsList className="w-full">
+                        <TabsTrigger value="document" className="flex-1">Document</TabsTrigger>
+                        <TabsTrigger value="context" className="flex-1">Context</TabsTrigger>
+                      </TabsList>
+                    </div>
+                    <div className="flex-1 min-h-0 p-0">
+                      <TabsContent
+                        value="document"
+                        className="h-full m-0 p-0 data-[state=active]:flex data-[state=active]:flex-col data-[state=inactive]:hidden"
+                      >
+                        <Tabs
+                          defaultValue={selectedDocuments[0]?.id}
+                          className="h-full flex flex-col"
+                        >
+                          <div className="px-4 pt-2 pb-0">
+                            <TabsList className="w-full justify-start overflow-x-auto">
+                              {selectedDocuments.map((doc) => (
+                                <TabsTrigger
+                                  key={doc.id}
+                                  value={doc.id}
+                                  className="flex items-center gap-2 text-xs max-w-[150px] relative group"
+                                  title={doc.displayTitle || doc.name}
+                                >
+                                  <FileText className="h-3 w-3 flex-shrink-0" />
+                                  <span className="truncate">
+                                    {doc.displayTitle || doc.name}
+                                  </span>
+                                </TabsTrigger>
+                              ))}
+                            </TabsList>
+                          </div>
+                          <div className="flex-1 min-h-0">
+                            {selectedDocuments.map((doc) => (
+                              <TabsContent
+                                key={doc.id}
+                                value={doc.id}
+                                className="h-full m-0 p-0 data-[state=active]:flex data-[state=inactive]:hidden"
+                              >
+                                <div className="h-full w-full">
+                                  <ClientOnly fallback={
+                                    <div className="flex items-center justify-center h-full">
+                                      <Loader size="lg" />
+                                      <p className="ml-2">Loading PDF viewer...</p>
+                                    </div>
+                                  }>
+                                    <PDFViewerReact
+                                      url={`/api/research/files/${doc.path}`}
+                                      isTextSelectionEnabled={isTextSelectionEnabled}
+                                      onTextSelect={handleAddSelectedText}
+                                      documentName={doc.displayTitle || doc.name}
+                                    />
+                                  </ClientOnly>
+                                </div>
+                              </TabsContent>
+                            ))}
+                          </div>
+                        </Tabs>
+                      </TabsContent>
+                      <TabsContent
+                        value="context"
+                        className="h-full m-0 p-4 data-[state=active]:flex data-[state=active]:flex-col data-[state=inactive]:hidden"
+                      >
+                        <SelectedContext 
+                          contextItems={selectedContextItems}
+                          onRemove={handleRemoveContextItem}
+                          onClear={handleClearContextItems}
+                        />
+                      </TabsContent>
+                    </div>
+                  </Tabs>
+                </div>
+              </div>
+            ) : (
+              <CardContent className="h-full flex items-center justify-center">
+                <Card className="text-center">
+                  <CardContent className="pt-6">
+                    <FileText
+                      className="h-16 w-16 mx-auto mb-4 text-muted-foreground"
+                      aria-hidden="true"
                     />
-                  </>
-                )}
-              </Card>
-            </ResizablePanel>
-
-            <ResizableHandle withHandle />
-
-            {/* PDF Preview Panel */}
-            <ResizablePanel defaultSize={40} minSize={40}>
-              <PreviewPanel
-                selectedDocuments={selectedDocuments}
-                codeGenerations={codeGenerations}
-                onCloseCodeGeneration={handleCloseCodeGeneration}
-              />
-            </ResizablePanel>
-          </ResizablePanelGroup>
+                    <CardDescription>
+                      Select a document to view
+                    </CardDescription>
+                  </CardContent>
+                </Card>
+              </CardContent>
+            )}
+          </div>
         </div>
       </div>
     </TooltipProvider>
-  );
-}
-
-export default function ResearchChatPage() {
-  return (
-    <ToolProvider>
-      <ResearchChatPageContent />
-    </ToolProvider>
   );
 }

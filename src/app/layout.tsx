@@ -9,7 +9,7 @@ import "./globals.css";
 
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (
-    <html lang="en">
+    <html lang="en" suppressHydrationWarning>
       <body className="p-0 dark bg-background text-white font-sans overflow-x-hidden">
         <QueryProvider>
           {/* <MainNavBar /> */}
