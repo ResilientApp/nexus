@@ -217,6 +217,16 @@ export default function ResearchChatPage() {
       timestamp: new Date().toISOString(),
     };
 
+    // Log the context being included
+    if (selectedContextItems.length > 0) {
+      console.log(`\n📎 Including ${selectedContextItems.length} context item(s) with user message:`);
+      selectedContextItems.forEach((item, index) => {
+        console.log(`   ${index + 1}. From "${item.source}": "${item.text.substring(0, 80)}${item.text.length > 80 ? '...' : ''}"`);
+      });
+    } else {
+      console.log('\n💬 Sending message without additional context');
+    }
+
     // Create a placeholder for the assistant's response
     const assistantPlaceholderMessage: Message = {
       id: (Date.now() + 1).toString(), // Ensure unique ID
@@ -232,12 +242,28 @@ export default function ResearchChatPage() {
     setIsLoading(true);
 
     try {
+      console.log('=== SENDING CHAT REQUEST ===');
+      console.log('Original Query:', currentQuery);
+      console.log('Selected Documents:', selectedDocuments.map(doc => doc.name));
+      
+      if (selectedContextItems.length > 0) {
+        console.log('Context Items Being Sent:');
+        selectedContextItems.forEach((item, index) => {
+          console.log(`  ${index + 1}. Source: ${item.source}`);
+          console.log(`     Text: ${item.text.substring(0, 100)}${item.text.length > 100 ? '...' : ''}`);
+        });
+      } else {
+        console.log('No context items selected');
+      }
+      console.log('=== END CHAT REQUEST INFO ===');
+
       const response = await fetch("/api/research/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           query: currentQuery, // Use stored query
           documentPaths: selectedDocuments.map((doc) => doc.path),
+          contextItems: selectedContextItems.length > 0 ? selectedContextItems : undefined,
         }),
       });
 
@@ -658,6 +684,17 @@ export default function ResearchChatPage() {
                   role="form"
                   aria-label="Send message"
                 >
+                  {/* Context indicator */}
+                  {/* Displays the context selected above chat text box */}
+                  {selectedContextItems.length > 0 && (
+                    <div className="mb-3 p-2 bg-blue-50 dark:bg-blue-950/30 rounded-md border border-blue-200 dark:border-blue-800">
+                      <div className="flex items-center gap-2 text-sm text-blue-700 dark:text-blue-300">
+                        <span className="font-medium">Context enabled:</span>
+                        <span>{selectedContextItems.length} item{selectedContextItems.length !== 1 ? 's' : ''} will be included with your question</span>
+                      </div>
+                    </div>
+                  )}
+                  
                   <div className="flex space-x-2">
                     <div className="flex-1 space-y-2">
                       <Label htmlFor="message-input" className="sr-only">

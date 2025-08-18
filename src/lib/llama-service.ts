@@ -5,7 +5,6 @@ import {
   PostgresIndexStore,
 } from "@llamaindex/postgres";
 
-import dotenv from "dotenv";
 import fs from "fs/promises";
 import {
   ChatMessage,
@@ -24,8 +23,6 @@ import {
 import { ClientConfig } from "pg";
 import { config } from "../config/environment";
 import { configureLlamaSettings } from "./config/llama-settings";
-
-dotenv.config();
 
 const RESEARCH_SYSTEM_PROMPT = `
 You are Nexus, an AI research assistant specialized in Apache ResilientDB and its related blockchain technology, distributed systems, and fault-tolerant consensus protocols. Your primary role is to help students, researchers, and practitioners understand complex technical concepts related to Apache ResilientDB and blockchain systems, who can answer questions about documents. 
