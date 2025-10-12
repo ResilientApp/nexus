@@ -46,7 +46,8 @@ next-env.d.ts
 
 
 
-# extra 
+# extra
+extra 
 /src/archive
 /src/experimental
 parsing-cache.json

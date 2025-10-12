@@ -50,6 +50,7 @@ import { ChevronLeft, ChevronRight, GlobeIcon, Menu, MessageCircle, SquarePen } 
 import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 
+
 interface Message {
   id: string;
   content: string;
@@ -99,7 +100,13 @@ function useSessionId() {
   return { sessionId: sessionIdRef.current, resetSession };
 }
 
+
+
 function ResearchChatPageContent() {
+
+  console.log("ResearchChatPageContent mounted");
+
+
   const modeOptions: Record<"research" | "code", string> = {
     research: "Research",
     code: "Code",
@@ -112,7 +119,10 @@ function ResearchChatPageContent() {
   const [selectedDocuments, setSelectedDocuments] = useState<Document[]>([]);
   const [messages, setMessages] = useState<Message[]>([]);
   const [inputValue, setInputValue] = useState("");
+
+
   const [isLoading, setIsLoading] = useState(false);
+  
   const [isPreparingIndex, setIsPreparingIndex] = useState(false);
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const [indexError, setIndexError] = useState(false);
@@ -123,6 +133,10 @@ function ResearchChatPageContent() {
   const [language, setLanguage] = useState<Language>("ts");
   const [mode, setMode] = useState<"research" | "code">("research");
   const [scrollOpacity, setScrollOpacity] = useState(0);
+
+  const [isStreaming, setIsStreaming] = useState(false);
+  const [serverResponding, setServerResponding] = useState(false); // ✅ new
+  const abortControllerRef = useRef<AbortController | null>(null);
 
   const { sessionId, resetSession } = useSessionId();
 
@@ -514,101 +528,126 @@ function ResearchChatPageContent() {
     }
   };
 
-  const handleSendMessage = async (payload: {
-    query: string;
-    documentPaths: string[];
-    tool?: string;
-    language?: Language;
-    scope?: string[];
-  }) => {
-    const userMessage: Message = {
-      id: crypto.randomUUID(),
-      content: payload.query,
-      role: "user",
-      timestamp: new Date().toISOString(),
-    };
+  
 
-    // Create a placeholder for the assistant's response
-    const assistantPlaceholderMessage: Message = {
-      id: crypto.randomUUID(),
-      content:
-        payload.tool === "code-composer"
-          ? "Reading and analyzing documents to generate code. Check the preview panel to see live progress."
-          : "",
-      role: "assistant",
-      timestamp: new Date().toISOString(),
-      isLoadingPlaceholder: payload.tool !== "code-composer",
-      docPaths: payload.documentPaths,
-    };
-
-    setMessages((prev) => [...prev, userMessage, assistantPlaceholderMessage]);
-    setInputValue("");
-    setIsLoading(true);
-
-    let earlyCodeGenerationId: string | null = null;
-    if (payload.tool === "code-composer") {
-      earlyCodeGenerationId = crypto.randomUUID();
-
-      const newCodeGeneration: CodeGeneration = {
-        id: earlyCodeGenerationId,
-        language: payload.language || "ts",
-        query: payload.query,
-        topic: "",
-        plan: "",
-        pseudocode: "",
-        implementation: "",
-        hasStructuredResponse: false,
-        timestamp: new Date().toISOString(),
-        isStreaming: true,
-        currentSection: "reading-documents",
-        sources: [],
-      };
-
-      setCodeGenerations((prev) => [...prev, newCodeGeneration]);
+const handleStop = () => {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      abortControllerRef.current = null;
     }
+    setIsStreaming(false);
+    setServerResponding(false); // ✅ stop reflects server streaming
+  };
 
-    try {
-      const streamingPayload = {
-        ...payload,
-        enableStreaming: true,
-        sessionId,
-      };
-      const response = await fetch("/api/research/chat", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(streamingPayload),
-      });
+// const handleStop = () => {
+//   console.log("handleStop called");
+// };
 
-      if (!response.ok) {
-        setMessages((prev) =>
-          prev.map((msg) =>
-            msg.id === assistantPlaceholderMessage.id
-              ? {
-                  ...msg,
-                  content:
-                    "Sorry, I couldn't get a response. Please try again.",
-                  isLoadingPlaceholder: false,
-                }
-              : msg,
-          ),
+
+// Modify handleSendMessage
+const handleSendMessage = async (payload: {
+  query: string;
+  documentPaths: string[];
+  tool?: string;
+  language?: Language;
+  scope?: string[];
+}) => {
+  
+  const userMessage: Message = {
+    id: crypto.randomUUID(),
+    content: payload.query,
+    role: "user",
+    timestamp: new Date().toISOString(),
+  };
+
+  const assistantPlaceholderMessage: Message = {
+    id: crypto.randomUUID(),
+    content:
+      payload.tool === "code-composer"
+        ? "Reading and analyzing documents to generate code. Check the preview panel to see live progress."
+        : "",
+    role: "assistant",
+    timestamp: new Date().toISOString(),
+    isLoadingPlaceholder: payload.tool !== "code-composer",
+    docPaths: payload.documentPaths,
+  };
+
+  setMessages((prev) => [...prev, userMessage, assistantPlaceholderMessage]);
+  setInputValue("");
+  setIsLoading(true);
+  setIsStreaming(true);
+  setServerResponding(true);
+
+  const controller = new AbortController();
+  abortControllerRef.current = controller;
+
+  let earlyCodeGenerationId: string | null = null;
+  if (payload.tool === "code-composer") {
+    earlyCodeGenerationId = crypto.randomUUID();
+
+    const newCodeGeneration: CodeGeneration = {
+      id: earlyCodeGenerationId,
+      language: payload.language || "ts",
+      query: payload.query,
+      topic: "",
+      plan: "",
+      pseudocode: "",
+      implementation: "",
+      hasStructuredResponse: false,
+      timestamp: new Date().toISOString(),
+      isStreaming: true,
+      currentSection: "reading-documents",
+      sources: [],
+    };
+
+    setCodeGenerations((prev) => [...prev, newCodeGeneration]);
+  }
+
+  try {
+    const streamingPayload = {
+      ...payload,
+      enableStreaming: true,
+      sessionId,
+    };
+    const response = await fetch("/api/research/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(streamingPayload),
+      signal: controller.signal,
+    });
+
+    if (!response.ok) {
+      setMessages((prev) =>
+        prev.map((msg) =>
+          msg.id === assistantPlaceholderMessage.id
+            ? {
+                ...msg,
+                content: "Sorry, I couldn't get a response. Please try again.",
+                isLoadingPlaceholder: false,
+              }
+            : msg
+        )
+      );
+
+      if (earlyCodeGenerationId) {
+        setCodeGenerations((prev) =>
+          prev.filter((gen) => gen.id !== earlyCodeGenerationId)
         );
-
-        if (earlyCodeGenerationId) {
-          setCodeGenerations((prev) =>
-            prev.filter((gen) => gen.id !== earlyCodeGenerationId),
-          );
-        }
-
-        throw new Error(`Failed to send message. Status: ${response.status}`);
       }
 
-      await handleCodeComposerStream(
-        response,
-        assistantPlaceholderMessage,
-        payload,
-        earlyCodeGenerationId,
-      );
-    } catch (error) {
+      throw new Error(`Failed to send message. Status: ${response.status}`);
+    }
+
+    await handleCodeComposerStream(
+      response,
+      assistantPlaceholderMessage,
+      payload,
+      earlyCodeGenerationId
+    );
+  } catch (error: any) {
+    if (error.name === "AbortError") {
+      console.log("Streaming stopped by user");
+    } else {
       console.error("Chat error:", error);
       setMessages((prev) =>
         prev.map((msg) =>
@@ -618,19 +657,24 @@ function ResearchChatPageContent() {
                 content: "Sorry, an error occurred. Please try again.",
                 isLoadingPlaceholder: false,
               }
-            : msg,
-        ),
+            : msg
+        )
       );
-
-      if (earlyCodeGenerationId) {
-        setCodeGenerations((prev) =>
-          prev.filter((gen) => gen.id !== earlyCodeGenerationId),
-        );
-      }
-    } finally {
-      setIsLoading(false);
     }
-  };
+
+    if (earlyCodeGenerationId) {
+      setCodeGenerations((prev) =>
+        prev.filter((gen) => gen.id !== earlyCodeGenerationId)
+      );
+    }
+  } finally {
+    setIsLoading(false);
+    setIsStreaming(false);
+    abortControllerRef.current = null;
+  }
+};
+
+
 
   const handleKeyDown = () => {};
 
@@ -1060,7 +1104,7 @@ function ResearchChatPageContent() {
                             <span>Search</span>
                           </PromptInputButton>
                         </PromptInputTools>
-                        <PromptInputSubmit
+                        {/* <PromptInputSubmit
                           disabled={
                             !inputValue.trim() ||
                             isLoading ||
@@ -1068,7 +1112,39 @@ function ResearchChatPageContent() {
                             selectedDocuments.length === 0
                           }
                           status={isLoading || isPreparingIndex ? "submitted" : ("ready" as any)}
-                        />
+                        /> */}
+                        <PromptInputSubmit
+                          disabled={
+                                !isStreaming && (
+                                  !inputValue.trim() ||
+                                  isLoading ||
+                                  isPreparingIndex ||
+                                  selectedDocuments.length === 0
+                                )
+                              }
+
+                          status={isLoading || isPreparingIndex ? "submitted" : ("ready" as any)}
+                          className={
+                                isStreaming
+                                  ? "bg-red-600 hover:bg-red-700 text-white"
+                                  : "bg-blue-600 hover:bg-blue-700 text-white"
+                          }
+                          onClick={() => {
+                            if (isStreaming) {
+                              handleStop(); // 🔴 stop streaming if already running
+                            } else {
+                              handleSendMessage({
+                                query: inputValue,
+                                documentPaths: selectedDocuments.map((d) => d.path),
+                                tool: activeTool === "code-composer" ? "code-composer" : undefined,
+                                language: language,
+                              });
+                            }
+                          }}
+                        >
+                          {/* {isStreaming ? "■ Stop" : "▶️ Chat"} */}
+                        </PromptInputSubmit>
+
                       </PromptInputToolbar>
                     </PromptInput>
                     </div>
