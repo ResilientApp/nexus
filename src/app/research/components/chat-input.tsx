@@ -35,6 +35,8 @@ interface ChatInputProps {
   isPreparingIndex: boolean;
   selectedDocuments: Document[];
   onKeyDown: (e: React.KeyboardEvent<HTMLTextAreaElement>) => void;
+  stopStreaming: () => void;
+  isStreaming: boolean;
 }
 
 export const ChatInput: React.FC<ChatInputProps> = ({
@@ -45,6 +47,8 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   isPreparingIndex,
   selectedDocuments,
   onKeyDown,
+  stopStreaming,
+  isStreaming,
 }) => {
   const { activeTool, setTool } = useTool();
   const [language, setLanguage] = useState<Language>("ts");
@@ -70,6 +74,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
     };
 
     onSendMessage(payload);
+    setInputValue("");
   };
 
   const handleToolChange = (tool: string) => {
@@ -163,7 +168,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
               </div>
             </div>
           </div>
-          <Button
+          {/* <Button
             onClick={handleSendMessage}
             disabled={
               !inputValue.trim() ||
@@ -180,7 +185,39 @@ export const ChatInput: React.FC<ChatInputProps> = ({
             ) : (
               <Send className="h-4 w-4" aria-hidden="true" />
             )}
-          </Button>
+          </Button> */}
+          <div className="flex items-center space-x-2">
+            {!isStreaming ? (
+              <Button
+                onClick={handleSendMessage}
+                disabled={
+                  !inputValue.trim() ||
+                  isLoading ||
+                  isPreparingIndex ||
+                  selectedDocuments.length === 0
+                }
+                className="px-4"
+                size="lg"
+                aria-label="Send message"
+              >
+                {isLoading || isPreparingIndex ? (
+                  <Loader size="sm" aria-label="Sending..." />
+                ) : (
+                  <Send className="h-4 w-4" aria-hidden="true" />
+                )}
+              </Button>
+            ) : (
+              <Button
+                onClick={stopStreaming}
+                variant="destructive"
+                size="lg"
+                className="px-4"
+              >
+                Stop
+              </Button>
+            )}
+          </div>
+
         </div>
       </CardContent>
     </div>

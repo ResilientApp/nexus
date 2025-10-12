@@ -118,6 +118,57 @@ const getErrorMessage = (error: any): string => {
   return "Failed to process your question";
 };
 
+// CODE FOR TESTING PURPOSES - SIMULATED STREAMING RESPONSE
+
+// export async function POST(req: NextRequest) {
+//   try {
+//     const requestData: RequestData = await req.json();
+//     const sessionId = requestData.sessionId || Date.now().toString();
+
+//     const RANDOM_BOGUS = [
+//       "Flibber flabber wozzle!",
+//       "Gloopity glop, the blockchain bounces!",
+//       "Snarfle wumpus, quantum bananas dance!",
+//       "Ziggity zaggity, distributed spaghetti everywhere!",
+//       "Hocus pocus, your query just became a penguin!"
+//     ];
+
+//     const stream = new ReadableStream({
+     
+//       async start(controller) {
+//         const startTime = Date.now();
+//         const fiveMinutes = 1 * 10 * 1000;
+
+//         while (Date.now() - startTime < fiveMinutes) {
+//           const randomIndex = Math.floor(Math.random() * RANDOM_BOGUS.length);
+//           const text = RANDOM_BOGUS[randomIndex] + " ";
+
+//           controller.enqueue(text);
+//           console.log("printing........")
+//           // Small delay so it feels like typing
+//           await new Promise((resolve) => setTimeout(resolve, 100));
+//         }
+
+//         controller.close();
+//       },
+//     });
+
+//     return new Response(stream, {
+//       headers: {
+//         "Content-Type": "text/plain; charset=utf-8",
+//         "X-Session-Id": sessionId,
+//       },
+//     });
+//   } catch (error) {
+//     console.error("Error in chat API:", error);
+//     return NextResponse.json(
+//       { error: "Internal server error" },
+//       { status: 500 }
+//     );
+//   }
+// }
+
+
 export async function POST(req: NextRequest) {
   try {
     const requestData: RequestData = await req.json();
